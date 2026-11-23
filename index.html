@@ -138,7 +138,7 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
     <span class="small">音量</span>
     <div class="meter"><i id="meterBar"></i><s id="meterTh"></s></div>
     <label>しきい値 <input id="th" type="range" min="-65" max="-20" step="1" value="-45"> <span id="thVal" class="small"></span></label>
-    <label>区切りの無音 <input id="sil" type="range" min="300" max="1500" step="50" value="700"> <span id="silVal" class="small"></span></label>
+    <label>区切りの無音 <input id="sil" type="range" min="300" max="3000" step="50" value="700"> <span id="silVal" class="small"></span></label>
     <label><input id="interim" type="checkbox" checked> 話している途中も文字起こし</label>
     <label><input id="autoCal" type="checkbox" checked> 開始時にしきい値を自動調整</label>
     <button id="btnCal" disabled>今すぐ自動調整</button>
@@ -632,7 +632,7 @@ function onSettingChange(k){
 // ---------- マイクと発話区切り（音量ベースの簡易VAD） ----------
 let micOn = false, ctx = null, stream = null, node = null, micSrc = null, micSuspended = false;
 let speaking = false, segChunks = [], preRoll = [], silentMs = 0, speechMs = 0, lastInterim = 0, segId = 0, segLang = null;
-const PRE_ROLL = 3, MAX_SEG_MS = 12000;
+const PRE_ROLL = 3, MAX_SEG_MS = 25000;   // 1回の発話は最大25秒（Whisperは30秒まで）
 const CAL_MS = 2000, CAL_MARGIN = 10;   // 2秒測って、雑音より10dB上をしきい値にする
 let calib = null;  // { dbs: [] } 測定中だけ
 
@@ -700,12 +700,16 @@ function micSuspend(){
   if (micSuspended || !stream) return;
   try { micSrc && micSrc.disconnect(); } catch(e) {}
   try { stream.getTracks().forEach(t => t.stop()); } catch(e) {}
+  try { ctx && ctx.suspend(); } catch(e) {}
+  // Safari 17+：音声の扱いを「再生だけ」に切り替えると、通話モード（こもった音）から抜けられる
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e) {}
   micSuspended = true;
 }
 async function micResume(){
   if (!micSuspended || !micOn) return;
   micSuspended = false;
   try {
+    try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch(e) {}
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
     if (ctx.state !== 'running') { try { await ctx.resume(); } catch(e) {} }
     micSrc = ctx.createMediaStreamSource(stream); micSrc.connect(node);
@@ -888,8 +892,11 @@ function speak(text, lang){
     if (micOn && ttsActive === 0) setTimeout(() => { if (!ttsBusy() && micOn) { if (micSuspended) micResume(); $('live').textContent = '聞いています…'; } }, 450);
   };
   u.onend = done; u.onerror = (e) => { diag('読み上げエラー: ' + e.error); done(); };
-  if (IS_IOS && micOn) micSuspend();   // iPhoneはマイク使用中だと読み上げが小さく遠い音になるので、一時的にマイクを外す
-  speechSynthesis.speak(u);
+  if (IS_IOS && micOn) {
+    // iPhoneはマイク使用中だと読み上げが小さくこもった音になるので、マイクを外してから少し待って読む
+    micSuspend();
+    setTimeout(() => speechSynthesis.speak(u), 250);
+  } else speechSynthesis.speak(u);
 }
 
 // ---------- 詳細ログ ----------
