@@ -200,7 +200,7 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
   </details>
   <details style="margin-top:8px" id="diagBox">
     <summary>詳細ログ（うまく動かない時は、これをコピーして送ってください）</summary>
-    <textarea id="diagLog" readonly style="min-height:180px;font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-top:6px"></textarea>
+    <pre id="diagLog" style="white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;padding:8px;background:var(--bg);border:1px solid var(--line);border-radius:6px;user-select:text;-webkit-user-select:text"></pre>
     <button id="btnDiagCopy" style="margin-top:6px">詳細ログをコピー</button>
   </details>
 </section>
@@ -499,7 +499,7 @@ try { const prev = localStorage.getItem('vt-diag'); if (prev) diagLines.push('--
 let diagSaveT = 0;
 function diag(t){
   diagLines.push(t); if (diagLines.length > 400) diagLines.shift();
-  const el = $('diagLog'); if (el) { el.value = diagLines.join('\n'); el.scrollTop = el.scrollHeight; }
+  const el = $('diagLog'); if (el) el.textContent = diagLines.join('\n');
   clearTimeout(diagSaveT);
   diagSaveT = setTimeout(() => { try { const i = diagLines.lastIndexOf('--- 今回 ---'); localStorage.setItem('vt-diag', diagLines.slice(i + 1).slice(-150).join('\n')); } catch(e) {} }, 200);
 }
@@ -858,7 +858,19 @@ function speak(text, lang){
 }
 
 // ---------- 詳細ログ ----------
-$('btnDiagCopy').onclick = async () => { try { await navigator.clipboard.writeText(diagLines.join('\n')); $('btnDiagCopy').textContent = 'コピーしました'; setTimeout(() => $('btnDiagCopy').textContent = '詳細ログをコピー', 1500); } catch(e) { $('diagLog').select(); } };
+$('btnDiagCopy').onclick = () => {
+  const text = diagLines.join('\n') || '(ログが空です)';
+  // iPhoneでも確実にコピーできるよう、選択してコピーする方式を使う
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;font-size:16px';
+  document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false; try { ok = document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+  if (!ok && navigator.clipboard) navigator.clipboard.writeText(text).then(() => {}, () => {});
+  $('btnDiagCopy').textContent = 'コピーしました（' + diagLines.length + '行）';
+  setTimeout(() => $('btnDiagCopy').textContent = '詳細ログをコピー', 2000);
+};
+$('diagBox').open = !!lsGet('vt-diag');   // 前回のログがある時は最初から開いておく
 (async () => {
   let gpu = 'なし';
   try { const a = navigator.gpu && await navigator.gpu.requestAdapter(); if (a) { const i = a.info || {}; gpu = [i.vendor, i.architecture, i.description].filter(Boolean).join(' ') || 'あり'; } } catch(e) { gpu = 'エラー'; }
