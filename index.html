@@ -265,11 +265,12 @@ async function hasWebGPU(){
   try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch(e) { return false; }
 }
 
-async function loadASR(modelSpec, devicePref){
+async function loadASR(modelSpec, devicePref, lowMem){
   await loadLib();
   const [model, variant] = modelSpec.split('|');
   let device = devicePref;
-  if (device === 'auto') device = (await hasWebGPU()) ? 'webgpu' : 'wasm';
+  // iPhoneはメモリが少ないので、自動のときはCPU（小さいq8モデル）を使う
+  if (device === 'auto') device = (!lowMem && await hasWebGPU()) ? 'webgpu' : 'wasm';
   if (device === 'webgpu' && !(await hasWebGPU())) device = 'wasm';
   const key = modelSpec + '|' + device;
   if (pipes[key]) { asrKey = key; return device; }
@@ -377,7 +378,7 @@ async function handle(msg){
       postMessage({ type:'status', text:'ライブラリを準備中…' });
       await loadLib();
       postMessage({ type:'status', text:'音声認識モデルを準備中…' });
-      const device = await loadASR(msg.asrModel, msg.asrDevice);
+      const device = await loadASR(msg.asrModel, msg.asrDevice, msg.lowMem);
       for (const k of msg.mtKeys) {
         postMessage({ type:'status', text:'翻訳モデルを準備中… (' + MT[k].id + ')' });
         await loadMT(k);
@@ -493,7 +494,15 @@ function send(msg, transfer, background){
   return new Promise((res, rej) => { waiters[msg.id] = { res, rej, background }; worker.postMessage(msg, transfer || []); });
 }
 const diagLines = [];
-function diag(t){ diagLines.push(t); if (diagLines.length > 400) diagLines.shift(); const el = $('diagLog'); if (el) { el.value = diagLines.join('\n'); el.scrollTop = el.scrollHeight; } }
+// 前回のログも残す（ページが落ちても原因を見られるように）
+try { const prev = localStorage.getItem('vt-diag'); if (prev) diagLines.push('--- 前回のログ ---', ...prev.split('\n'), '--- 今回 ---'); } catch(e) {}
+let diagSaveT = 0;
+function diag(t){
+  diagLines.push(t); if (diagLines.length > 400) diagLines.shift();
+  const el = $('diagLog'); if (el) { el.value = diagLines.join('\n'); el.scrollTop = el.scrollHeight; }
+  clearTimeout(diagSaveT);
+  diagSaveT = setTimeout(() => { try { const i = diagLines.lastIndexOf('--- 今回 ---'); localStorage.setItem('vt-diag', diagLines.slice(i + 1).slice(-150).join('\n')); } catch(e) {} }, 200);
+}
 
 worker.onmessage = (e) => {
   const m = e.data;
@@ -552,7 +561,7 @@ async function loadModels(){
     const keys = mtKeysFor($('dir').value);
     const fg = keys.filter(k => k === 'ja-en'), bg = keys.filter(k => k !== 'ja-en');  // 軽い opus はすぐ、Qwen等は裏で
     lsSet('vt-loading', '音声認識・日→英モデル');   // 途中でページが落ちたら次回わかるように
-    const r = await send({ type:'load', asrModel: $('asrModel').value, asrDevice: $('asrDevice').value, mtKeys: fg });
+    const r = await send({ type:'load', asrModel: $('asrModel').value, asrDevice: $('asrDevice').value, mtKeys: fg, lowMem: IS_IOS });
     lsSet('vt-loading', null);
     ready = true; loadedSig = signature();
     if (!micOn) $('btnMic').textContent = '② マイク開始';
@@ -588,7 +597,7 @@ $('btnReload').onclick = () => location.reload();
   if (crashed) {
     lsSet('vt-loading', null);
     diag('前回 ' + crashed + ' の読み込み中にページが終了');
-    setStatus('<b class="err">前回、' + esc(crashed) + ' の読み込み中にページが落ちたようです（スマホのメモリ不足の可能性）。</b>' +
+    setStatus('<b class="err">前回、' + esc(crashed) + ' の読み込み中にページが終了しました。</b>（メモリ不足のほか、読み込み中に他のアプリに切り替えた時も出ます。読み込み中は画面を開いたままにしてください）' +
       (/qwen/i.test(crashed) ? '「英→日モデル」を M2M100 か opus-mt-en-jap に変えて、①を押してください。' : '「音声認識」を Whisper base にして、①を押してください。'));
     return;
   }
