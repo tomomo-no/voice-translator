@@ -237,6 +237,14 @@ async function loadLib(){
   try {
     const n = (self.crossOriginIsolated && navigator.hardwareConcurrency) ? Math.max(1, Math.min(8, navigator.hardwareConcurrency - 2)) : 1;
     T.env.backends.onnx.wasm.numThreads = n;
+    if (LOW_MEM) {
+      // iPhone向け：GPU機能なしの小さい計算エンジン（約14MB）を使う。大きい版はiPhoneで落ちやすいため
+      const ow = T.env.backends.onnx.wasm;
+      const ver = (T.env.backends.onnx.versions && T.env.backends.onnx.versions.web) || '1.31.0-dev.20260914-8d85527a0';
+      const base = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@' + ver + '/dist/';
+      ow.wasmPaths = { mjs: base + 'ort-wasm-simd-threaded.mjs', wasm: base + 'ort-wasm-simd-threaded.wasm' };
+      log('計算エンジン: 軽量版（iPhone向け）', ver);
+    }
   } catch(e) {}
   return T;
 }
@@ -286,7 +294,11 @@ async function loadASR(modelSpec, devicePref, lowMem){
   const p = await T.pipeline('automatic-speech-recognition', model, { device, dtype, progress_callback: progress(model) });
   log('音声認識モデル読み込み完了');
   // 初回はGPUの準備に時間がかかるので、無音で1回動かしておく
-  await p(new Float32Array(16000), { language:'english', task:'transcribe' });
+  if (device === 'webgpu') {
+    log('試運転開始');
+    await p(new Float32Array(16000), { language:'english', task:'transcribe' });
+    log('試運転完了');
+  }
   pipes[key] = p; asrKey = key;
   return device;
 }
@@ -300,6 +312,7 @@ function loadMT(key){
     const t = performance.now();
     log('翻訳モデル読み込み開始', m.id);
     let p;
+    if (m.llm && LOW_MEM) throw new Error('iPhoneではメモリ不足のためQwenは使えません。英→日モデルを opus-mt-en-jap か M2M100 にしてください');
     if (m.llm) {
       // 小型LLMで翻訳。GPUがあればGPU、なければCPU
       let device = 'wasm', dtype = 'q8';
@@ -410,7 +423,8 @@ async function handle(msg){
 
 let chain = Promise.resolve();
 // 英→日モデルは裏で読み込む（その間も音声認識や日→英は動く）
-self.onmessage = (e) => { if (e.data.type === 'loadMT' || e.data.type === 'translate') handle(e.data); else chain = chain.then(() => handle(e.data)); };
+let LOW_MEM = false;
+self.onmessage = (e) => { if (e.data.type === 'config') { LOW_MEM = !!e.data.lowMem; return; } if (e.data.type === 'loadMT' || e.data.type === 'translate') handle(e.data); else chain = chain.then(() => handle(e.data)); };
 </script>
 
 <!-- ================= マイク入力（AudioWorklet） ================= -->
@@ -482,6 +496,7 @@ if (!IS_STANDALONE && location.protocol === 'https:') {
 
 // ---------- Worker ----------
 const worker = new Worker(URL.createObjectURL(new Blob([$('worker-src').textContent], {type:'text/javascript'})), { type:'module' });
+worker.postMessage({ type:'config', lowMem: IS_IOS });
 let ready = false, loadedSig = '';
 const files = {};
 let nextId = 1;
@@ -500,8 +515,7 @@ let diagSaveT = 0;
 function diag(t){
   diagLines.push(t); if (diagLines.length > 400) diagLines.shift();
   const el = $('diagLog'); if (el) el.textContent = diagLines.join('\n');
-  clearTimeout(diagSaveT);
-  diagSaveT = setTimeout(() => { try { const i = diagLines.lastIndexOf('--- 今回 ---'); localStorage.setItem('vt-diag', diagLines.slice(i + 1).slice(-150).join('\n')); } catch(e) {} }, 200);
+  try { const i = diagLines.lastIndexOf('--- 今回 ---'); localStorage.setItem('vt-diag', diagLines.slice(i + 1).slice(-150).join('\n')); } catch(e) {}  // すぐ保存（落ちても残るように）
 }
 
 worker.onmessage = (e) => {
