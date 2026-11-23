@@ -630,7 +630,7 @@ function onSettingChange(k){
 }
 
 // ---------- マイクと発話区切り（音量ベースの簡易VAD） ----------
-let micOn = false, ctx = null, stream = null, node = null;
+let micOn = false, ctx = null, stream = null, node = null, micSrc = null, micSuspended = false;
 let speaking = false, segChunks = [], preRoll = [], silentMs = 0, speechMs = 0, lastInterim = 0, segId = 0, segLang = null;
 const PRE_ROLL = 3, MAX_SEG_MS = 12000;
 const CAL_MS = 2000, CAL_MARGIN = 10;   // 2秒測って、雑音より10dB上をしきい値にする
@@ -670,7 +670,7 @@ async function startMic(){
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch(e) {}  // 読み上げの許可を取る
   stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
   if (ctx.state !== 'running') { try { await ctx.resume(); } catch(e) {} }
-  const src = ctx.createMediaStreamSource(stream);
+  const src = ctx.createMediaStreamSource(stream); micSrc = src;
   const mute = ctx.createGain(); mute.gain.value = 0; mute.connect(ctx.destination);  // Safariで処理を止めないため（音は出ない）
   try {
     await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([$('worklet-src').textContent], {type:'text/javascript'})));
@@ -695,7 +695,27 @@ async function startMic(){
   $('live').textContent = '聞いています…';
   if ($('autoCal').checked) startCalibration();
 }
+// iPhone用：読み上げ中だけマイクを完全に止めて、終わったらつなぎ直す
+function micSuspend(){
+  if (micSuspended || !stream) return;
+  try { micSrc && micSrc.disconnect(); } catch(e) {}
+  try { stream.getTracks().forEach(t => t.stop()); } catch(e) {}
+  micSuspended = true;
+}
+async function micResume(){
+  if (!micSuspended || !micOn) return;
+  micSuspended = false;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+    if (ctx.state !== 'running') { try { await ctx.resume(); } catch(e) {} }
+    micSrc = ctx.createMediaStreamSource(stream); micSrc.connect(node);
+  } catch (e) {
+    diag('[マイク再開失敗] ' + e.message);
+    setStatus('<b class="err">マイクを再開できませんでした。「マイク停止」→「マイク開始」を押してください。</b>');
+  }
+}
 function stopMic(){
+  micSuspended = false;
   if (speaking) endSegment();
   try { node && node.disconnect(); } catch(e) {}
   try { stream && stream.getTracks().forEach(t => t.stop()); } catch(e) {}
@@ -865,9 +885,10 @@ function speak(text, lang){
   const done = () => {
     ttsActive = Math.max(0, ttsActive - 1);
     ttsUntil = performance.now() + 400;   // 残響を拾わないよう少し待つ
-    if (micOn && ttsActive === 0) setTimeout(() => { if (!ttsBusy() && micOn) $('live').textContent = '聞いています…'; }, 450);
+    if (micOn && ttsActive === 0) setTimeout(() => { if (!ttsBusy() && micOn) { if (micSuspended) micResume(); $('live').textContent = '聞いています…'; } }, 450);
   };
   u.onend = done; u.onerror = (e) => { diag('読み上げエラー: ' + e.error); done(); };
+  if (IS_IOS && micOn) micSuspend();   // iPhoneはマイク使用中だと読み上げが小さく遠い音になるので、一時的にマイクを外す
   speechSynthesis.speak(u);
 }
 
