@@ -79,7 +79,10 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
 </head>
 <body>
 <main>
-<h1>日英音声翻訳（端末内AI・オフライン対応）</h1>
+<div class="row" style="justify-content:space-between;flex-wrap:nowrap">
+  <h1>日英音声翻訳（端末内AI・オフライン対応）</h1>
+  <button id="btnReload" title="再読み込み" style="flex:none">↻ 再読み込み</button>
+</div>
 <div id="installTip" hidden></div>
 
 <section class="panel">
@@ -122,7 +125,8 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
   </div>
   <div class="row" style="margin-top:10px">
     <button id="btnLoad" class="primary">① モデルを準備</button>
-    <button id="btnMic" class="primary big" disabled>② マイク開始</button>
+    <label><input id="autoLoad" type="checkbox" checked> 次回から開いたら自動で準備</label>
+    <button id="btnMic" class="primary big" disabled>② マイク（①のあと押せます）</button>
     <span class="status" id="status">未準備</span>
   </div>
   <div id="progress"></div>
@@ -437,7 +441,7 @@ const $ = (id) => document.getElementById(id);
 const SR = 16000, CHUNK = 1600; // 100ms単位
 
 // ---------- 設定の保存（このブラウザ内だけ） ----------
-const SETTINGS = ['dir','asrModel','jaenModel','enjaModel','asrDevice','th','sil','interim','autoCal','ttsOn','ttsRate'];
+const SETTINGS = ['dir','asrModel','jaenModel','enjaModel','asrDevice','th','sil','interim','autoCal','ttsOn','ttsRate','autoLoad'];
 function saveSettings(){
   const o = {}; SETTINGS.forEach(k => { const el = $(k); o[k] = el.type === 'checkbox' ? el.checked : el.value; });
   try { localStorage.setItem('vt-settings', JSON.stringify(o)); } catch(e) {}
@@ -448,7 +452,13 @@ try {
 } catch(e) {}
 SETTINGS.forEach(k => $(k).addEventListener('change', () => { saveSettings(); onSettingChange(k); }));
 
-function setStatus(html){ $('status').innerHTML = html; }
+function setStatus(html){
+  $('status').innerHTML = html;
+  // スマホでは画面下のマイクボタン付近しか見えないことが多いので、エラーはここにも出す
+  if (/class="err"/.test(html) && $('live')) { $('live').className = ''; $('live').innerHTML = html; }
+}
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e) { return null; } }
+function lsSet(k, v){ try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch(e) {} }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 if (location.protocol === 'file:') {
@@ -534,26 +544,33 @@ function signature(){ return [$('asrModel').value, $('asrDevice').value, mtKeysF
 
 async function loadModels(){
   $('btnLoad').disabled = true; $('btnMic').disabled = true;
+  if (!micOn) $('btnMic').textContent = '準備中…（しばらくお待ちください）';
   try {
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch(e) {}
     loadStart = performance.now();
     diag('=== 準備開始 ' + new Date().toLocaleString('ja-JP') + ' 設定: ' + signature());
     const keys = mtKeysFor($('dir').value);
     const fg = keys.filter(k => k === 'ja-en'), bg = keys.filter(k => k !== 'ja-en');  // 軽い opus はすぐ、Qwen等は裏で
+    lsSet('vt-loading', '音声認識・日→英モデル');   // 途中でページが落ちたら次回わかるように
     const r = await send({ type:'load', asrModel: $('asrModel').value, asrDevice: $('asrDevice').value, mtKeys: fg });
+    lsSet('vt-loading', null);
     ready = true; loadedSig = signature();
+    if (!micOn) $('btnMic').textContent = '② マイク開始';
     const base = `認識: ${r.device === 'webgpu' ? 'GPU' : 'CPU'}、翻訳: CPU ${r.isolated ? 'マルチスレッド' : '1スレッド'}`;
     diag('音声認識' + (fg.length ? '・日→英' : '') + ' 準備完了 ' + base);
     $('btnMic').disabled = false;
     if (bg.length) {
       enjaState = 'loading';
       setStatus(`<b class="ok">${fg.length ? '日→英は使えます' : '音声認識の準備完了'}</b>。大きい翻訳モデルを裏で準備中…` + elapsedHtml());
+      lsSet('vt-loading', '翻訳モデル（' + bg.join(', ') + '）');
       Promise.all(bg.map(k => send({ type:'loadMT', key: k }, null, true)))
-        .then(() => { enjaState = 'ready'; loadStart = 0; setStatus(`<b class="ok">準備完了</b>（${base}）`); diag('英→日 準備完了'); })
-        .catch(e => { enjaState = 'error'; loadStart = 0; setStatus('<b class="err">翻訳モデルの読み込み失敗: ' + esc(e.message) + '</b>（日→英は使えます。下の「詳細ログ」をコピーして送ってください）'); })
+        .then(() => { lsSet('vt-loading', null); lsSet('vt-autoload', loadedSig); enjaState = 'ready'; loadStart = 0; setStatus(`<b class="ok">準備完了</b>（${base}）`); diag('英→日 準備完了'); })
+        .catch(e => { lsSet('vt-loading', null); enjaState = 'error'; loadStart = 0; setStatus('<b class="err">翻訳モデルの読み込み失敗: ' + esc(e.message) + '</b>（日→英は使えます。下の「詳細ログ」をコピーして送ってください）'); })
         .finally(() => { Object.keys(files).forEach(k => delete files[k]); renderProgress(); updateStorage(); });
-    } else { loadStart = 0; setStatus(`<b class="ok">準備完了</b>（${base}、${(r.ms/1000).toFixed(1)}秒）`); }
+    } else { lsSet('vt-autoload', loadedSig); loadStart = 0; setStatus(`<b class="ok">準備完了</b>（${base}、${(r.ms/1000).toFixed(1)}秒）`); }
   } catch (e) {
+    lsSet('vt-loading', null);
+    if (!micOn) $('btnMic').textContent = '② マイク（①のあと押せます）';
     loadStart = 0; diag('[失敗] ' + e.message);
     setStatus('<b class="err">読み込み失敗: ' + esc(e.message) + '</b>' + (navigator.onLine ? '' : '（オフラインです。初回はネット接続が必要です）'));
   } finally {
@@ -563,11 +580,28 @@ async function loadModels(){
   }
 }
 $('btnLoad').onclick = loadModels;
+$('btnReload').onclick = () => location.reload();
+
+// 前回、読み込み中にページが落ちていないか（スマホはメモリ不足で落ちることがある）
+(() => {
+  const crashed = lsGet('vt-loading');
+  if (crashed) {
+    lsSet('vt-loading', null);
+    diag('前回 ' + crashed + ' の読み込み中にページが終了');
+    setStatus('<b class="err">前回、' + esc(crashed) + ' の読み込み中にページが落ちたようです（スマホのメモリ不足の可能性）。</b>' +
+      (/qwen/i.test(crashed) ? '「英→日モデル」を M2M100 か opus-mt-en-jap に変えて、①を押してください。' : '「音声認識」を Whisper base にして、①を押してください。'));
+    return;
+  }
+  if ($('autoLoad').checked && lsGet('vt-autoload') === signature()) {
+    diag('前回と同じ設定なので自動で準備します');
+    setTimeout(loadModels, 300);
+  }
+})();
 
 function onSettingChange(k){
   if (['dir','asrModel','jaenModel','enjaModel','asrDevice'].includes(k) && ready && signature() !== loadedSig) {
     setStatus('<b class="warn">設定が変わりました。「① モデルを準備」をもう一度押してください。</b>');
-    if (!micOn) $('btnMic').disabled = true;
+    if (!micOn) { $('btnMic').disabled = true; $('btnMic').textContent = '② マイク（①のあと押せます）'; }
   }
   updateMeterLabels();
 }
@@ -612,14 +646,28 @@ async function startMic(){
   try { ctx.resume(); } catch(e) {}
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch(e) {}  // 読み上げの許可を取る
   stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
-  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([$('worklet-src').textContent], {type:'text/javascript'})));
   if (ctx.state !== 'running') { try { await ctx.resume(); } catch(e) {} }
-  diag('マイク: ' + ctx.sampleRate + 'Hz → 16000Hz');
   const src = ctx.createMediaStreamSource(stream);
-  node = new AudioWorkletNode(ctx, 'rec');
-  node.port.onmessage = (e) => onChunk(e.data);
-  const mute = ctx.createGain(); mute.gain.value = 0;
-  src.connect(node); node.connect(mute); mute.connect(ctx.destination);  // Safariで処理を止めないため（音は出ない）
+  const mute = ctx.createGain(); mute.gain.value = 0; mute.connect(ctx.destination);  // Safariで処理を止めないため（音は出ない）
+  try {
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([$('worklet-src').textContent], {type:'text/javascript'})));
+    node = new AudioWorkletNode(ctx, 'rec');
+    node.port.onmessage = (e) => onChunk(e.data);
+    diag('マイク: AudioWorklet ' + ctx.sampleRate + 'Hz → 16000Hz');
+  } catch (e) {
+    // AudioWorkletが使えない環境向けの予備（古い方式）
+    diag('AudioWorklet不可、予備方式に切替: ' + e.message);
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    const ratio = ctx.sampleRate / 16000, buf = new Float32Array(1600); let n = 0, t = 0, acc = 0, cnt = 0;
+    node.onaudioprocess = (ev) => {
+      const ch = ev.inputBuffer.getChannelData(0);
+      for (let i = 0; i < ch.length; i++) {
+        acc += ch[i]; cnt++; t += 1;
+        if (t >= ratio) { t -= ratio; buf[n++] = acc / cnt; acc = 0; cnt = 0; if (n === buf.length) { onChunk(buf.slice(0)); n = 0; } }
+      }
+    };
+  }
+  src.connect(node); node.connect(mute);
   micOn = true; $('btnMic').textContent = '■ マイク停止'; $('btnCal').disabled = false;
   $('live').textContent = '聞いています…';
   if ($('autoCal').checked) startCalibration();
@@ -638,7 +686,11 @@ $('btnCal').onclick = () => { if (micOn) startCalibration(); };
 $('btnMic').onclick = async () => {
   if (micOn) return stopMic();
   try { await startMic(); }
-  catch (e) { setStatus('<b class="err">マイクを使えません: ' + esc(e.message) + '</b>'); }
+  catch (e) {
+    diag('[マイク失敗] ' + (e.name || '') + ' ' + e.message);
+    try { ctx && ctx.close(); } catch(_) {}
+    setStatus('<b class="err">マイクを使えません: ' + esc(e.message) + '</b>' + (e.name === 'NotAllowedError' ? '（設定 → Safari → マイク で「許可」にしてください）' : ''));
+  }
 };
 
 function rmsDb(a){ let s = 0; for (let i = 0; i < a.length; i++) s += a[i]*a[i]; return 10 * Math.log10(s / a.length + 1e-12); }
