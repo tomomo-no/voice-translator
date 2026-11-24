@@ -873,10 +873,13 @@ function fillVoices(){
   const vs = speechSynthesis.getVoices();
   let saved = {}; try { saved = JSON.parse(localStorage.getItem('vt-voices') || '{}'); } catch(e) {}
   for (const [id, lang] of [['ttsJa','ja'], ['ttsEn','en']]) {
+    // Apple端末の「おもしろ声」（Albertなど）はこもったり変な声なので一覧の下へ
+    const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Junior|Ralph|Fred|Kathy)\b/i;
+    const nov = v => NOVELTY.test(v.name) ? 1 : 0;
     const list = vs.filter(v => v.lang.toLowerCase().startsWith(lang))
-      .sort((a, b) => (b.localService - a.localService) || a.name.localeCompare(b.name));
+      .sort((a, b) => (nov(a) - nov(b)) || (b.localService - a.localService) || a.name.localeCompare(b.name));
     $(id).innerHTML = list.length
-      ? list.map(v => `<option value="${esc(v.name)}">${esc(v.name)}${v.localService ? '' : '（要ネット）'}</option>`).join('')
+      ? list.map(v => `<option value="${esc(v.name)}">${esc(v.name)}${v.localService ? '' : '（要ネット）'}${nov(v) ? '（効果音的な声）' : ''}</option>`).join('')
       : '<option value="">（この言語の声がありません）</option>';
     if (saved[id] && list.some(v => v.name === saved[id])) $(id).value = saved[id];
   }
