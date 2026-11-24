@@ -1,6 +1,6 @@
 // オフライン用：アプリ本体（このフォルダのファイル）を保存しておく。
 // AIモデルとライブラリは、ページ側がブラウザ内（Cache Storage）に別途保存する。
-const CACHE = 'vt-app-v7';
+const CACHE = 'vt-app-v8';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

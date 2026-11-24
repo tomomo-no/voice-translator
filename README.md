@@ -14,6 +14,7 @@ AIはすべてブラウザ（端末）の中で動きます。音声や文字は
 | 音声認識 | Whisper base / small（OpenAI、ONNX: Xenova） | MIT |
 | 日→英 | opus-mt-ja-en（Helsinki-NLP、ONNX: Xenova） | Apache 2.0 |
 | 英→日（推奨） | Qwen3 0.6B（Qwen、ONNX: onnx-community） | Apache 2.0 |
+| 英→日（軽量） | FuguMT en-ja（staka、ONNX: Kadonox） | CC BY-SA 4.0 |
 | 英→日 | M2M100 418M（Meta、ONNX: Xenova） | MIT |
 | 英→日（比較用） | opus-mt-en-jap（Helsinki-NLP、ONNX: Xenova） | Apache 2.0 |
 | 読み上げ | ブラウザ内蔵の音声合成（Web Speech API） | OS標準 |

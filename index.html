@@ -111,6 +111,7 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
     <label>英→日モデル
       <select id="enjaModel">
         <option value="qwen">Qwen3 0.6B（推奨・Apache 2.0・約570MB・GPU）</option>
+        <option value="fugu">FuguMT（軽量・高品質・CC BY-SA・約100MB）</option>
         <option value="m2m100">M2M100 418M（MIT・約630MB）</option>
         <option value="opus">opus-mt-en-jap（軽量・品質低め）</option>
       </select>
@@ -174,7 +175,7 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
   <textarea id="testText" placeholder="ここに日本語か英語を入力">I'm going to the station to meet my friend. Could you tell me how long it takes?</textarea>
   <div class="row" style="margin-top:8px">
     <button id="btnTest">翻訳する</button>
-    <button id="btnCompare">英→日の3モデルを比較</button>
+    <button id="btnCompare">英→日のモデルを比較</button>
     <span class="small">比較は両方のモデルを読み込むので、初回は時間がかかります。</span>
   </div>
   <div id="testOut" style="margin-top:8px"></div>
@@ -193,6 +194,7 @@ button.say{padding:2px 8px;font-size:14px;margin-top:4px}
       <tr><td>Whisper base / small（OpenAI、ONNX版: Xenova）</td><td>MIT</td><td>音声認識</td></tr>
       <tr><td>opus-mt-ja-en（Helsinki-NLP、ONNX版: Xenova）</td><td>Apache 2.0</td><td>日→英</td></tr>
       <tr><td>Qwen3 0.6B（Alibaba Qwen、ONNX版: onnx-community）</td><td>Apache 2.0</td><td>英→日（推奨。小型LLMで翻訳）</td></tr>
+      <tr><td>FuguMT en-ja（staka、ONNX版: Kadonox）</td><td>CC BY-SA 4.0</td><td>英→日（軽量。作者名の表示が必要、商用可）</td></tr>
       <tr><td>M2M100 418M（Meta、ONNX版: Xenova）</td><td>MIT</td><td>英→日</td></tr>
       <tr><td>opus-mt-en-jap（Helsinki-NLP、ONNX版: Xenova）</td><td>Apache 2.0</td><td>英→日（比較用。聖書データ中心で日常会話は苦手）</td></tr>
     </table>
@@ -254,6 +256,7 @@ const MT = {
   'ja-en:qwen':   { id:'onnx-community/Qwen3-0.6B-ONNX', llm:true },
   'en-ja:m2m100': { id:'Xenova/m2m100_418M', gen:{ src_lang:'en', tgt_lang:'ja' } },
   'en-ja:opus':   { id:'Xenova/opus-mt-en-jap' },
+  'en-ja:fugu':   { id:'Kadonox/fugumt-en-ja-onnx' },
   'en-ja:qwen':   { id:'onnx-community/Qwen3-0.6B-ONNX', llm:true },
 };
 
@@ -312,7 +315,7 @@ function loadMT(key){
     const t = performance.now();
     log('翻訳モデル読み込み開始', m.id);
     let p;
-    if (m.llm && LOW_MEM) throw new Error('iPhoneではメモリ不足のためQwenは使えません。英→日モデルを opus-mt-en-jap か M2M100 にしてください');
+    if (m.llm && LOW_MEM) throw new Error('iPhoneではメモリ不足のためQwenは使えません。英→日モデルを FuguMT か opus-mt-en-jap にしてください');
     if (m.llm) {
       // 小型LLMで翻訳。GPUがあればGPU、なければCPU
       let device = 'wasm', dtype = 'q8';
@@ -323,7 +326,13 @@ function loadMT(key){
       log('LLM', device, dtype);
       p = await T.pipeline('text-generation', m.id, { device, dtype, progress_callback: progress(m.id) });
     } else {
-      p = await T.pipeline('translation', m.id, { device:'wasm', dtype:'q8', progress_callback: progress(m.id) });
+      try {
+        p = await T.pipeline('translation', m.id, { device:'wasm', dtype:'q8', progress_callback: progress(m.id) });
+      } catch (e) {
+        // 軽量版（q8）のファイルが無いモデルは通常版で読む
+        log('q8で読めないので通常版で再試行', m.id, String(e && e.message || e).slice(0, 120));
+        p = await T.pipeline('translation', m.id, { device:'wasm', dtype:'fp32', progress_callback: progress(m.id) });
+      }
     }
     log('翻訳モデル読み込み完了', m.id, ((performance.now() - t)/1000).toFixed(1) + 's');
     return p;
@@ -612,7 +621,7 @@ $('btnReload').onclick = () => location.reload();
     lsSet('vt-loading', null);
     diag('前回 ' + crashed + ' の読み込み中にページが終了');
     setStatus('<b class="err">前回、' + esc(crashed) + ' の読み込み中にページが終了しました。</b>（メモリ不足のほか、読み込み中に他のアプリに切り替えた時も出ます。読み込み中は画面を開いたままにしてください）' +
-      (/qwen/i.test(crashed) ? '「英→日モデル」を M2M100 か opus-mt-en-jap に変えて、①を押してください。' : '「音声認識」を Whisper base にして、①を押してください。'));
+      (/qwen/i.test(crashed) ? '「英→日モデル」を FuguMT か opus-mt-en-jap に変えて、①を押してください。' : '「音声認識」を Whisper base にして、①を押してください。'));
     return;
   }
   if ($('autoLoad').checked && lsGet('vt-autoload') === signature()) {
@@ -847,7 +856,9 @@ $('btnCompare').onclick = async () => {
   if (detect(text) !== 'en') { $('testOut').innerHTML = '<span class="small">比較は英語の文で試してください。</span>'; return; }
   $('testOut').innerHTML = '<span class="small">比較中…</span>';
   const rows = [];
-  for (const [key, name] of [['en-ja:qwen','Qwen3 0.6B (Apache 2.0)'], ['en-ja:m2m100','M2M100 418M (MIT)'], ['en-ja:opus','opus-mt-en-jap (Apache 2.0)']]) {
+  const cands = [['en-ja:qwen','Qwen3 0.6B (Apache 2.0)'], ['en-ja:fugu','FuguMT (CC BY-SA 4.0)'], ['en-ja:m2m100','M2M100 418M (MIT)'], ['en-ja:opus','opus-mt-en-jap (Apache 2.0)']]
+    .filter(([k]) => !IS_IOS || !/qwen|m2m100/.test(k));   // iPhoneでは重いモデルは比較しない（落ちるため）
+  for (const [key, name] of cands) {
     try { const r = await send({ type:'translate', text, src:'en', key }); rows.push(`<tr><td>${name}</td><td>${esc(r.text)}</td><td>${(r.ms/1000).toFixed(2)}秒</td></tr>`); }
     catch (e) { rows.push(`<tr><td>${name}</td><td class="err">${esc(e.message)}</td><td></td></tr>`); }
     $('testOut').innerHTML = '<table class="cmp">' + rows.join('') + '</table>';
